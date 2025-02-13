@@ -1,0 +1,23 @@
+[project]
+name = "sp-detection"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "detectron2",
+    "opencv-python>=4.11.0.86",
+    "pandas>=2.2.3",
+    "torch>=2.5.1",
+    "torchaudio>=2.5.1",
+    "torchvision>=0.20.1",
+]
+
+[tool.uv.sources]
+detectron2 = { git = "https://github.com/facebookresearch/detectron2.git" }
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.5",
+]
+
