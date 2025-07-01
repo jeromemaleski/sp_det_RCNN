@@ -1,6 +1,6 @@
 # Sweetpotato detection
 Code for running Mask RCNN model for detecting sweetpotato roots.\
-Needs a model file\ 
+Needs a model file\
 An .env file holds the input and output directories and pixels per inch for the images
 
 ## convert folder of cell phone images
