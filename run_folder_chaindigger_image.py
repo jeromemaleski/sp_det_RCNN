@@ -12,7 +12,7 @@ import random
 from dotenv import load_dotenv
 
 # --- Model Configuration ---
-def setup_model():
+def setup_model(model):
     """Initializes and configures the Mask-RCNN model from Detectron2."""
     cfg = get_cfg()
     # Load model configuration from a YAML file
@@ -23,9 +23,10 @@ def setup_model():
     # There is only one class to detect (e.g., sweet potato)
     cfg.MODEL.ROI_HEADS.NUM_CLASSES = 1  
     # Load the pre-trained model weights
-    cfg.MODEL.WEIGHTS = './model/model_final_seandicky_chaindigger.pth' 
+    cfg.MODEL.WEIGHTS = model
+    #cfg.MODEL.WEIGHTS = './model/chain_bst_20250820.pth' 
     # Set the confidence score threshold for detections
-    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.5 
+    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.8
     return cfg
 
 # --- Image Annotation Helpers ---
@@ -200,6 +201,8 @@ def classify_sweetpot_class(weight_g, width_in, length_in):
 
     if weight_oz <= 1 or width_in <= 1 or length_in <= 2:
         return "trash"
+    elif length_in/width_in > 4.5:
+        return "lwg4p5"
     elif 1 < weight_oz < 5 or width_in < 2 or length_in < 3:
         return "canner"
     elif 5 <= weight_oz <= 9.4 and 2 <= width_in <= 3.5 and 3 <= length_in <= 9:
@@ -246,10 +249,13 @@ def process_single_contour(mask, calibrant, index, img_to_draw_on=None):
 
     # --- Volume & Weight Estimation ---
     # Simplified volume/weight estimations
-    volume_in3 = (4/3) * np.pi * (width_in/2)**2 * (length_in/2) # Ellipsoid volume
+    #volume_in3 = (4/3) * np.pi * (width_in/2)**2 * (length_in/2) # Ellipsoid volume
+    #ELlipsoid volume from known area
+    volume_in3 = (4/3) * area_in2 * (width_in / 2)
     # Density assumption would be needed for accurate weight. This is a placeholder.
     # Specific gravity of sweetpotato is ~1.05 g/cm^3. 1 in^3 = 16.3871 cm^3
     weight_g = volume_in3 * 16.3871 * 1.05
+    weigth_g_alt =(10 ** (1.4444 * np.log10(area_px * (1/calibrant ** 2)) + 0.8142))
 
     sweetpot_class = classify_sweetpot_class(weight_g, width_in, length_in)
 
@@ -267,6 +273,7 @@ def process_single_contour(mask, calibrant, index, img_to_draw_on=None):
         'Volume (in^3)': volume_in3,
         'Solidity': solidity,
         'Weight (g)': weight_g,
+        'Weight Alt (g)': weigth_g_alt,
         'Class': sweetpot_class,
     }
 
@@ -364,6 +371,7 @@ def main():
 
     input_path = os.getenv('INPUT_DIR', './input')
     output_path = os.getenv('OUTPUT_DIR', './output')
+    model = os.getenv('MODEL_PATH', './model/20250908_model.pth')
     # Calibrant: pixels per inch. Must be measured from a reference object.
     calibrant = float(os.getenv('CALIBRANT', '100.0')) 
 
@@ -393,7 +401,7 @@ def main():
         logging.warning("No .pos GPS file found in the input directory.")
 
     # --- Initialize Model and Find Images ---
-    cfg = setup_model()
+    cfg = setup_model(model)
     predictor = DefaultPredictor(cfg)
     img_paths = get_files(input_path, ('.png', '.jpg', '.jpeg'))
     

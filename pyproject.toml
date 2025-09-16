@@ -5,11 +5,14 @@ description = "detect sweetpotato roots from camera image"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "albumentations>=2.0.8",
     "detectron2",
     "dotenv>=0.9.9",
     "opencv-python>=4.11.0.86",
     "pandas>=2.2.3",
+    "pycocotools>=2.0.8",
     "pyproj>=3.7.1",
+    "scikit-learn>=1.7.1",
     "torch>=2.5.1",
     "torchaudio>=2.5.1",
     "torchvision>=0.20.1",
