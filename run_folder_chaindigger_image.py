@@ -12,14 +12,14 @@ import random
 from dotenv import load_dotenv
 
 # --- Model Configuration ---
-def setup_model(model):
+def setup_model(model,device):
     """Initializes and configures the Mask-RCNN model from Detectron2."""
     cfg = get_cfg()
     # Load model configuration from a YAML file
     cfg.merge_from_file("mask_rcnn_R_50_FPN_3x.yaml")
     cfg.DATALOADER.NUM_WORKERS = 2
-    # Set the model to run on CPU
-    cfg.MODEL.DEVICE = "cpu" 
+    # Set the model to run on CPU or GPU
+    cfg.MODEL.DEVICE = device 
     # There is only one class to detect (e.g., sweet potato)
     cfg.MODEL.ROI_HEADS.NUM_CLASSES = 1  
     # Load the pre-trained model weights
@@ -401,7 +401,15 @@ def main():
         logging.warning("No .pos GPS file found in the input directory.")
 
     # --- Initialize Model and Find Images ---
-    cfg = setup_model(model)
+    import torch
+    if torch.cuda.is_available():
+        logging.info("CUDA available. Using GPU for inference.")
+        device = "cuda"
+    else:
+        logging.info("CUDA not available. Using CPU for inference.")
+        device = "cpu"
+
+    cfg = setup_model(model,device)
     predictor = DefaultPredictor(cfg)
     img_paths = get_files(input_path, ('.png', '.jpg', '.jpeg'))
     
