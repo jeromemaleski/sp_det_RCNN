@@ -249,12 +249,13 @@ def process_single_contour(mask, calibrant, index, img_to_draw_on=None):
 
     # --- Volume & Weight Estimation ---
     # Simplified volume/weight estimations
-    #volume_in3 = (4/3) * np.pi * (width_in/2)**2 * (length_in/2) # Ellipsoid volume
+    volume_in3_alt = (4/3) * np.pi * (width_in/2)**2 * (length_in/2) # Ellipsoid volume
     #ELlipsoid volume from known area
     volume_in3 = (4/3) * area_in2 * (width_in / 2)
     # Density assumption would be needed for accurate weight. This is a placeholder.
-    # Specific gravity of sweetpotato is ~1.05 g/cm^3. 1 in^3 = 16.3871 cm^3
-    weight_g = volume_in3 * 16.3871 * 1.05
+    # Specific gravity of sweetpotato is ~1 g/cm^3. 1 in^3 = 16.3871 cm^3
+    sp=0.986
+    weight_g = volume_in3 * 16.3871 * sp
     weigth_g_alt =(10 ** (1.4444 * np.log10(area_px * (1/calibrant ** 2)) + 0.8142))
 
     sweetpot_class = classify_sweetpot_class(weight_g, width_in, length_in)
@@ -271,6 +272,7 @@ def process_single_contour(mask, calibrant, index, img_to_draw_on=None):
         'X Loc (px)': center_px[0],
         'Y Loc (px)': center_px[1],
         'Volume (in^3)': volume_in3,
+        'Volume Alt (in^3)': volume_in3_alt,
         'Solidity': solidity,
         'Weight (g)': weight_g,
         'Weight Alt (g)': weigth_g_alt,
