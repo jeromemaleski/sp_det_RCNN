@@ -12,21 +12,20 @@ import random
 from dotenv import load_dotenv
 
 # --- Model Configuration ---
-def setup_model(model,device):
+def setup_model(model, device, score_thresh=0.8):
     """Initializes and configures the Mask-RCNN model from Detectron2."""
     cfg = get_cfg()
     # Load model configuration from a YAML file
     cfg.merge_from_file("mask_rcnn_R_50_FPN_3x.yaml")
     cfg.DATALOADER.NUM_WORKERS = 2
     # Set the model to run on CPU or GPU
-    cfg.MODEL.DEVICE = device 
+    cfg.MODEL.DEVICE = device
     # There is only one class to detect (e.g., sweet potato)
-    cfg.MODEL.ROI_HEADS.NUM_CLASSES = 1  
+    cfg.MODEL.ROI_HEADS.NUM_CLASSES = 1
     # Load the pre-trained model weights
     cfg.MODEL.WEIGHTS = model
-    #cfg.MODEL.WEIGHTS = './model/chain_bst_20250820.pth' 
     # Set the confidence score threshold for detections
-    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.8
+    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = score_thresh
     return cfg
 
 # --- Image Annotation Helpers ---
@@ -58,10 +57,18 @@ def draw_text_centered(text, img, loc, **kwargs):
     return img
 
 # --- Timestamp and GPS Processing ---
-def parse_image_filename_time(img_path_full: str) -> datetime | None:
+def parse_image_filename_time(img_path_full: str, clock_offset_days: float = 0.0) -> datetime | None:
     """
     Parses a datetime object from an image filename.
     Expected format: "...-YYYYMMDD_HHMMSS_mmm.jpg"
+
+    clock_offset_days corrects for a camera whose onboard clock is known to be
+    wrong by a fixed number of days (e.g. the 2025 primary camera, whose clock
+    fell 3 days behind after water damage). It is added to the parsed
+    filename timestamp to recover the true capture time, and has no effect
+    on the GPS chunk/prefix matching (which uses the gps_data_NNNNNN filename
+    prefix, unaffected by clock drift) -- it only matters for the per-image
+    GPS lookup against the corrected .pos track.
     """
     img_filename = os.path.basename(img_path_full)
     match = re.search(r"(\d{8})_(\d{6})_(\d{3})", img_filename)
@@ -70,7 +77,7 @@ def parse_image_filename_time(img_path_full: str) -> datetime | None:
         try:
             timestamp_str = f"{date_str}{time_seconds_str}"
             base_dt = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S")
-            img_dt = base_dt + timedelta(milliseconds=int(ms_str))
+            img_dt = base_dt + timedelta(milliseconds=int(ms_str)) + timedelta(days=clock_offset_days)
             return img_dt
         except ValueError as e:
             logging.error(f"Error parsing date/time from '{img_filename}': {e}")
@@ -112,14 +119,14 @@ def find_closest_gps_coords(pos_file_path: str, target_datetime_obj: datetime) -
         logging.error(f"An error occurred while processing GPS file '{pos_file_path}': {e}")
         return None
     
-def find_closest_gps_coords_interp(pos_file_path: str, target_datetime_obj: datetime) -> tuple[float, float, float] | None:
+def load_gps_track(pos_file_path: str) -> pd.DataFrame | None:
     """
-    Finds the GPS coordinates from a .pos file closest to a target datetime,
-    with linear interpolation.
+    Loads and parses a .pos GPS track file once into a datetime-sorted DataFrame,
+    suitable for repeated lookups via find_closest_gps_coords_interp. Loading this
+    per-image instead (as opposed to once per run) is needlessly expensive at scale
+    -- a full day's track re-read and re-parsed for every single image in the folder.
+    Returns None on any error.
     """
-    if target_datetime_obj is None:
-        logging.error("Target datetime is None. Cannot find GPS coordinates.")
-        return None
     try:
         # Read .pos file, skipping header lines. Using sep='\s+' instead of the deprecated delim_whitespace=True
         df = pd.read_csv(
@@ -130,11 +137,31 @@ def find_closest_gps_coords_interp(pos_file_path: str, target_datetime_obj: date
             usecols=[0, 1, 2, 3, 4],
             names=['date', 'time', 'latitude', 'longitude', 'height']
         )
-        
+
         # Combine date and time columns and convert to datetime objects
         df['datetime'] = pd.to_datetime(df['date'] + ' ' + df['time'], format='%Y/%m/%d %H:%M:%S.%f')
         df = df.sort_values(by='datetime').reset_index(drop=True)
+        return df
 
+    except FileNotFoundError:
+        logging.error(f"GPS file not found at '{pos_file_path}'")
+        return None
+    except Exception as e:
+        logging.error(f"An error occurred while loading GPS file '{pos_file_path}': {e}")
+        return None
+
+def find_closest_gps_coords_interp(df: pd.DataFrame, target_datetime_obj: datetime) -> tuple[float, float, float] | None:
+    """
+    Finds the GPS coordinates closest to a target datetime, with linear interpolation,
+    from a GPS track DataFrame already loaded via load_gps_track().
+    """
+    if target_datetime_obj is None:
+        logging.error("Target datetime is None. Cannot find GPS coordinates.")
+        return None
+    if df is None:
+        logging.error("GPS DataFrame is None. Cannot find GPS coordinates.")
+        return None
+    try:
         if df.empty:
             logging.warning("GPS DataFrame is empty. Cannot find GPS coordinates.")
             return None
@@ -187,11 +214,8 @@ def find_closest_gps_coords_interp(pos_file_path: str, target_datetime_obj: date
             logging.info(f"Interpolated GPS for image timestamp {target_datetime_obj}: Long={interp_longitude:.6f}, Lat={interp_latitude:.6f}, H={interp_height:.3f}")
             return interp_longitude, interp_latitude, interp_height
 
-    except FileNotFoundError:
-        logging.error(f"GPS file not found at '{pos_file_path}'")
-        return None
     except Exception as e:
-        logging.error(f"An error occurred while processing GPS file '{pos_file_path}': {e}")
+        logging.error(f"An error occurred while finding GPS coordinates: {e}")
         return None
 
 # --- Object Classification and Measurement ---
@@ -280,7 +304,7 @@ def process_single_contour(mask, calibrant, index, img_to_draw_on=None):
     }
 
 # --- Main Processing Functions ---
-def process_image(predictor, img_path, out_path, calibrant, gps_file, write_out=True):
+def process_image(predictor, img_path, out_path, calibrant, gps_df, write_out=True, clock_offset_days=0.0):
     """
     Main function to process a single image: load, predict, measure, and save results.
     """
@@ -320,9 +344,9 @@ def process_image(predictor, img_path, out_path, calibrant, gps_file, write_out=
     df['Calibrant (px/in)'] = calibrant
     
     # --- Add GPS Data ---
-    img_time = parse_image_filename_time(img_path)
-    if gps_file and img_time:
-        coords = find_closest_gps_coords_interp(gps_file, img_time)
+    img_time = parse_image_filename_time(img_path, clock_offset_days=clock_offset_days)
+    if gps_df is not None and img_time:
+        coords = find_closest_gps_coords_interp(gps_df, img_time)
         if coords:
             df['Longitude'], df['Latitude'], df['Height'] = coords
     
@@ -375,11 +399,18 @@ def main():
     output_path = os.getenv('OUTPUT_DIR', './output')
     model = os.getenv('MODEL_PATH', './model/20250908_model.pth')
     # Calibrant: pixels per inch. Must be measured from a reference object.
-    calibrant = float(os.getenv('CALIBRANT', '100.0')) 
+    calibrant = float(os.getenv('CALIBRANT', '100.0'))
+    # Fixed clock error (in days) to add to this camera's filename timestamps before
+    # GPS lookup -- e.g. 3 for the 2025 primary camera (water-damaged clock, 3 days
+    # behind), 0 for a camera with a correct clock (e.g. 2025 secondary).
+    clock_offset_days = float(os.getenv('CLOCK_OFFSET_DAYS', '0'))
+    # Detectron2 ROI confidence threshold. Raise to cut false positives, lower to
+    # recover missed detections.
+    score_thresh = float(os.getenv('SCORE_THRESH', '0.8'))
 
     # --- Setup Output Directory and Logging ---
     os.makedirs(output_path, exist_ok=True)
-    
+
     log_file_path = os.path.join(output_path, 'processing_log.txt')
     logging.basicConfig(
         level=logging.INFO,
@@ -389,16 +420,37 @@ def main():
             logging.StreamHandler() # Also print logs to console
         ]
     )
-    
+
+    # --- Refuse to run into an OUTPUT_DIR containing a previous run's per-image
+    # CSVs: concatenate_all_results() below globs every .csv it finds, so leftover
+    # files from an earlier run (different settings, partial run, etc.) would get
+    # silently mixed into this run's all_results.csv. Clear OUTPUT_DIR (or point at
+    # a fresh directory) before re-running.
+    existing_csvs = [f for f in os.listdir(output_path)
+                     if f.endswith('.csv') and not f.startswith('all_') and not f.startswith('aggregated_')] \
+                    if os.path.isdir(output_path) else []
+    if existing_csvs:
+        logging.critical(
+            f"OUTPUT_DIR '{output_path}' already contains {len(existing_csvs)} per-image CSV(s) "
+            "from a previous run. Refusing to run to avoid mixing stale results into "
+            "all_results.csv -- clear this directory or point OUTPUT_DIR at a fresh one."
+        )
+        return
+
     if not os.path.exists(input_path):
         logging.critical(f"Input directory does not exist: {input_path}")
         return
 
-    # --- Find GPS file ---
+    # --- Find and load GPS track ---
     pos_files = get_files(input_path, ('.pos'))
     gps_file = pos_files[0] if pos_files else None
+    gps_df = None
     if gps_file:
         logging.info(f"Using GPS position file: {os.path.basename(gps_file)}")
+        gps_df = load_gps_track(gps_file)
+        if gps_df is None:
+            logging.critical(f"Failed to load GPS position file: {gps_file}")
+            return
     else:
         logging.warning("No .pos GPS file found in the input directory.")
 
@@ -411,7 +463,7 @@ def main():
         logging.info("CUDA not available. Using CPU for inference.")
         device = "cpu"
 
-    cfg = setup_model(model,device)
+    cfg = setup_model(model, device, score_thresh)
     predictor = DefaultPredictor(cfg)
     img_paths = get_files(input_path, ('.png', '.jpg', '.jpeg'))
     
@@ -421,7 +473,8 @@ def main():
         
     # --- Process each image ---
     for img_path in img_paths:
-        process_image(predictor, img_path, output_path, calibrant, gps_file, write_out=True)
+        process_image(predictor, img_path, output_path, calibrant, gps_df, write_out=True,
+                      clock_offset_days=clock_offset_days)
 
     # --- Final Reporting ---
     logging.info("Concatenating all result files...")
